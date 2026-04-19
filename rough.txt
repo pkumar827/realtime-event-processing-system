@@ -1,0 +1,12 @@
+Docker containers:
+CONTAINER ID   IMAGE                          NAMES
+abc123         confluentinc/cp-kafka:7.5.0    realtime-event-system-kafka-1
+xyz456         confluentinc/cp-zookeeper      realtime-event-system-zookeeper-1
+
+
+Kafka Topic kafka-topics --create \
+--topic booking-events \ producer sends data here and consumer reads from it 
+--bootstrap-server localhost:9092 \
+--partitions 1 \
+--replication-factor 1
+
