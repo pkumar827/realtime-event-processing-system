@@ -90,3 +90,96 @@ Docker is used to:
 ---
 
 ## 📂 Project Structure
+realtime-event-system/
+│
+├── producer/ # Generates booking events
+├── consumer/ # Processes events
+├── scaler/ # Auto-scaling logic (upcoming)
+├── utils/ # Config and logging utilities
+├── config/ # System settings
+├── logs/ # Logs
+├── docker-compose.yml
+
+
+---
+
+## 🔄 How It Works (Current Flow)
+
+1. Producer generates booking events (search, booking, payment, etc.)
+2. Events are sent to Kafka topic (`booking-events`)
+3. Kafka stores and streams events
+4. Consumer reads events in real time and processes them
+
+---
+
+## 🎯 Next Steps
+
+- Implement multiple consumers (workers)
+- Build auto-scaling module
+- Simulate load increase (10x–100x)
+- Measure latency and throughput
+- Add monitoring (optional)
+
+---
+
+## 🔥 Key Learning Outcomes
+
+- Real-time data streaming concepts
+- Kafka-based event-driven architecture
+- System design for scalability
+- Distributed system fundamentals
+
+---
+
+## 📌 Note
+
+This project is part of my **M.Tech Major Project** and is being developed incrementally, starting with a working streaming pipeline and progressing towards a fully scalable system.
+
+## 🚧 Development Branch Active
+This branch is used for implementing upcoming
+
+## 📋 Development Checklist
+
+### 🔹 Phase 1: Setup & Initial Pipeline
+- [x] Project structure created
+- [x] Kafka & Zookeeper setup using Docker
+- [x] Kafka topic created (`booking-events`)
+- [x] Producer implemented (event generator)
+- [x] Consumer implemented (event processing)
+- [x] Basic real-time streaming verified
+
+---
+
+### 🔹 Phase 2: Multi-Consumer System
+- [ ] Implement multiple consumers (workers)
+- [ ] Add worker identification and logging
+- [ ] Validate parallel processing
+
+---
+
+### 🔹 Phase 3: Auto-Scaling Module
+- [ ] Design auto-scaling strategy
+- [ ] Implement scaling controller
+- [ ] Dynamically spawn/terminate consumers
+- [ ] Define scaling thresholds
+
+---
+
+### 🔹 Phase 4: Load Simulation
+- [ ] Simulate high traffic (10x–100x)
+- [ ] Measure throughput and latency
+- [ ] Stress test system
+
+---
+
+### 🔹 Phase 5: Monitoring & Optimization
+- [ ] Add logging system
+- [ ] Integrate monitoring tools (optional)
+- [ ] Optimize performance
+
+---
+
+### 🔹 Phase 6: Deployment & Finalization
+- [ ] Prepare final architecture diagram
+- [ ] Clean code and documentation
+- [ ] Final testing and validation
