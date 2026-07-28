@@ -2,14 +2,16 @@
 Booking event generator (producer).
 
 Simulates a BookMyShow-style stream of booking events and publishes them to
-Kafka. Two load modes:
+Kafka. Three load modes:
 
   --mode steps   Fixed stages (baseline -> peak hold -> baseline). Predictable
-                 and repeatable; use this for the live demo. You can hold at
-                 peak for as long as the stage lasts while the scaler reacts.
+                 and repeatable; good for a quick live demo.
 
   --mode curve   Smooth Gaussian surge (quiet -> ramp -> peak -> tail-off).
                  Realistic shape; use this to capture graphs for the report.
+
+  --mode cycles  Repeating surges: peak for a while, drop to baseline, repeat.
+                 Makes the scaler cycle up and down several times in one run.
 
 Events are keyed by session_id, so every event from one booking session lands
 on the same partition and stays ordered.
@@ -17,7 +19,7 @@ on the same partition and stays ordered.
 Examples:
     python producer/data_generator.py --mode steps
     python producer/data_generator.py --mode curve --duration 120
-    python producer/data_generator.py --mode steps --peak-rate 1000
+    python producer/data_generator.py --mode cycles
 """
 
 import argparse
@@ -220,6 +222,27 @@ class CurveProfile:
         return self.total
 
 
+class CyclesProfile:
+    """Repeating surges: peak for peak_secs, baseline for cool_secs, xN."""
+
+    def __init__(self, base, peak, peak_secs, cool_secs, cycles):
+        self.base = base
+        self.peak = peak
+        self.peak_secs = peak_secs
+        self.cool_secs = cool_secs
+        self.period = peak_secs + cool_secs
+        self.total = self.period * cycles
+
+    def rate_at(self, elapsed):
+        if elapsed >= self.total:
+            return 0.0
+        pos = elapsed % self.period
+        return self.peak if pos < self.peak_secs else self.base
+
+    def duration(self):
+        return self.total
+
+
 # --------------------------------------------------------------------------
 # Main send loop
 # --------------------------------------------------------------------------
@@ -295,8 +318,8 @@ def run(profile, args):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Booking event generator")
-    p.add_argument("--mode", choices=["steps", "curve"], default="steps",
-                   help="load profile: steps (demo) or curve (report)")
+    p.add_argument("--mode", choices=["steps", "curve", "cycles"], default="steps",
+                   help="load profile: steps (demo), curve (report), cycles (repeating)")
     p.add_argument("--duration", type=int, default=settings.CURVE_DURATION,
                    help="run length in seconds (curve mode)")
     p.add_argument("--base-rate", type=int, default=settings.BASE_RATE)
@@ -314,6 +337,10 @@ def main():
         # Rebuild the step profile using any overridden rates.
         stages = [(30, args.base_rate), (60, args.peak_rate), (30, args.base_rate)]
         profile = StepProfile(stages)
+    elif args.mode == "cycles":
+        profile = CyclesProfile(args.base_rate, args.peak_rate,
+                                settings.CYCLE_PEAK_SEC, settings.CYCLE_COOL_SEC,
+                                settings.CYCLE_COUNT)
     else:
         profile = CurveProfile(args.base_rate, args.peak_rate, args.duration,
                                settings.CURVE_PEAK_CENTER, settings.CURVE_WIDTH)

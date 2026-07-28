@@ -50,3 +50,22 @@ CONSUMER_GROUP = "booking-workers"
 # Simulated processing work per event, in milliseconds. This sets one worker's
 # capacity: WORK_MS=5 -> ~200 events/sec. Tuning lever for the scaling demo.
 WORK_MS = 5
+
+# --- Auto-scaler settings ---
+# The scaler watches consumer-group lag (events produced but not yet processed)
+# and adjusts the number of workers to keep up. All thresholds are config so
+# handling more load is a tuning change, not a code change.
+SCALE_UP_LAG = 300       # lag above this -> add a worker
+SCALE_DOWN_LAG = 50      # lag below this -> remove a worker
+SCALE_COOLDOWN_SEC = 10  # min seconds between scaling actions (prevents flapping)
+SCALER_POLL_SEC = 3      # how often to check lag
+MIN_WORKERS = 1          # always keep at least one worker
+MAX_WORKERS = 3          # ceiling = partition count (extra workers would idle)
+
+# --- Cycles profile (mode=cycles): repeating on/off surges for a live demo ---
+# Runs peak load for CYCLE_PEAK_SEC, drops to baseline for CYCLE_COOL_SEC, and
+# repeats CYCLE_COUNT times. Lets the scaler cycle up and down repeatedly.
+CYCLE_PEAK_SEC = 120     # seconds at peak load per cycle (your "2 min")
+CYCLE_COOL_SEC = 30      # seconds at baseline between surges
+CYCLE_COUNT = 3          # how many surge cycles to run
+

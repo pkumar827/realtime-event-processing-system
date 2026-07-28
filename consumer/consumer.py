@@ -8,7 +8,7 @@ the auto-scaler starts and stops.
 Each worker:
   - joins the consumer group (so partitions are load-balanced across workers)
   - simulates a fixed amount of processing work per event (config: WORK_MS)
-  - measures processing latency (now - event timestamp)
+  - measures processing latency (now - event timestamp), reported per interval
   - prints periodic stats so you can see it coping or falling behind
 
 Run one worker:
@@ -67,7 +67,8 @@ def run(args):
     worker = args.worker_id
     processed = 0
     since_report = 0
-    latency_sum = 0.0
+    latency_sum = 0.0       # reset each report window
+    latency_count = 0       # events counted in this window
     latency_max = 0.0
     start = time.perf_counter()
     last_report = start
@@ -93,6 +94,7 @@ def run(args):
                     if latency_ms < 0:
                         latency_ms = 0.0
                     latency_sum += latency_ms
+                    latency_count += 1
                     latency_max = max(latency_max, latency_ms)
 
                 process_event(event)
@@ -107,12 +109,14 @@ def run(args):
         elapsed = now - last_report
         if elapsed >= 1.0:
             rate = since_report / elapsed
-            avg_latency = (latency_sum / processed) if processed else 0.0
+            avg_latency = (latency_sum / latency_count) if latency_count else 0.0
             print(f"[{worker}] {processed:9}  {rate:6.0f}  "
                   f"{avg_latency:14.0f}  {latency_max:14.0f}")
             last_report = now
             since_report = 0
-            latency_max = 0.0   # max is per-report-window, not lifetime
+            latency_sum = 0.0      # reset window: avg reflects THIS interval only
+            latency_count = 0
+            latency_max = 0.0
 
     consumer.close()
     total_elapsed = time.perf_counter() - start
