@@ -1,185 +1,121 @@
 # Real-Time Scalable Event Processing System with Auto-Scaling Simulation
 
-## 👤 Author
-Piyush Kumar  
-M.Tech (Data Engineering)  
-IIT Jodhpur  
+M.Tech Major Project — Piyush Kumar (M25DE1046)
+School of Artificial Intelligence & Data Science, IIT Jodhpur
 
----
+## What this project does
 
-## 📌 Project Overview
+Ticket-booking platforms (BookMyShow and similar) get hit with sudden traffic
+spikes when a popular event opens — the load can jump 10x–100x within seconds.
+This project simulates that burst of booking events, streams them through Kafka,
+processes them with a pool of consumer workers, and runs an auto-scaler that adds
+or removes workers based on how far the consumers are falling behind. The goal is
+to show the system keeping latency under control as load rises, with measured
+numbers to back it up.
 
-This project aims to design and implement a **real-time scalable event processing system** inspired by platforms like BookMyShow, where massive traffic spikes occur during ticket launches.
+Pipeline:
 
-During such events:
-- Thousands of users perform actions simultaneously
-- Systems receive continuous streams of events
-- Sudden load spikes (10x–100x) can crash traditional systems
+    Event Generator  →  Kafka (booking-events topic)  →  Consumer workers  →  Auto-Scaler
+       (producer)         3 partitions                    (consumer group)     (scales workers)
 
-This project simulates such scenarios and builds a system capable of:
-- Processing events in real time
-- Handling high data velocity
-- Scaling dynamically based on load (in progress)
+## Environment and hardware constraints (changes from the proposal)
 
----
+The original proposal specified Docker (Confluent Kafka + Zookeeper images),
+plus Prometheus and Grafana for monitoring. When I set the project up on my
+actual development machine, that stack was not workable, so I made some
+deliberate changes. Documenting them here because they are engineering
+decisions, not shortcuts — the system design and deliverables are unchanged.
 
-## 🚀 Current Progress (~40%)
+**The machine:** Lenovo IdeaPad 330, Intel Core i3-8130U (2 cores / 4 threads),
+4 GB RAM, no dedicated GPU, Windows 11. In practice Windows alone uses around
+2.5 GB, so free memory sat at a few hundred MB before I started anything.
 
-### ✅ Completed
-- Use case finalized (ticket booking system)
-- System architecture designed
-- Kafka and Zookeeper setup using Docker
-- Producer implemented (event generator)
-- Consumer implemented (event processing pipeline)
+**The problem:** The Confluent Docker stack runs two JVMs (Kafka and Zookeeper),
+which together want roughly 1.5 GB, and Docker Desktop's WSL2 VM adds another
+1.5–2 GB on top. That is 5–6 GB of demand on a 4 GB machine. It swapped
+constantly and locked up — and the one thing this project is built to do is
+generate high load, which is exactly what pushed it over the edge.
 
-### ⏳ In Progress
-- Auto-scaling module (dynamic worker management)
-- Load-based performance evaluation
+What I changed, and why:
 
----
+- **Dropped Docker, installed everything natively inside WSL2 (Ubuntu).**
+  Removed the Docker Desktop VM overhead entirely. Docker was only ever a
+  convenience for starting the broker; it is not part of the system's logic.
+  Containerization is kept as the documented cloud-deployment path (see Future
+  Scope), which is where it actually earns its keep.
 
-## 🧠 System Architecture (Current)
+- **Dropped Zookeeper — running Kafka in KRaft mode.** Kafka 4.x manages its own
+  metadata quorum and no longer needs Zookeeper, so a single node acts as both
+  broker and controller. That deletes an entire JVM from the memory budget.
 
-Producer → Kafka → Consumer → (Auto-Scaling Module - Upcoming)
+- **Capped the Kafka broker heap at 512 MB** (`-Xmx512m -Xms512m`). Default is
+  1 GB; the broker runs comfortably at 512 MB for this workload and leaves room
+  for the Python processes.
 
----
+- **Replaced Prometheus + Grafana with CSV logging + pandas/matplotlib.** A full
+  monitoring stack cannot coexist with the broker on 4 GB. Instead the workers
+  and scaler log metrics (latency, throughput, consumer lag, worker count) to CSV,
+  and I generate the graphs from that with matplotlib. Same evidence, a fraction
+  of the memory, and the plots go straight into the report.
 
-## 🛠️ Tech Stack
+- **Kept Apache Kafka.** Kafka is the core streaming technology in the proposal
+  and stays exactly that. KRaft is still Apache Kafka — same broker, same client
+  API, just without the separate Zookeeper process.
 
-- **Python**
-- **Apache Kafka**
-- **Zookeeper**
-- **Docker**
-- **VS Code**
+Net effect: the WSL2 memory cap is set to 2 GB, Kafka lives in 512 MB of that,
+and Windows keeps the rest. The system runs, and the load simulation runs, on a
+4 GB laptop.
 
----
+## Tech stack
 
-## ⚙️ Why These Technologies?
+- Python 3
+- Apache Kafka 4.3.1 (KRaft mode, no Zookeeper)
+- kafka-python-ng (Kafka client)
+- psutil (resource monitoring for the scaler)
+- pandas + matplotlib (metrics and plots)
+- Java 17 (runtime for Kafka)
+- WSL2 / Ubuntu (runtime environment)
 
-### 🔹 Apache Kafka
-Kafka is used as the core streaming platform because:
-- It can handle **high-throughput real-time data**
-- It acts as a **buffer between producers and consumers**
-- It ensures **fault-tolerant and scalable event streaming**
-- Widely used in industry (finance, booking systems, etc.)
+## Current status
 
----
+Working:
+- Native Kafka (KRaft) running under WSL2
+- `booking-events` topic with 3 partitions
+- Producer generating booking events
+- Consumer reading events end-to-end
 
-### 🔹 Zookeeper
-Zookeeper is required for Kafka because:
-- It manages **Kafka cluster coordination**
-- Keeps track of brokers and topics
-- Ensures **system consistency and reliability**
+In progress:
+- Rate-controlled load generation (ramp up to simulate spikes)
+- Multi-worker consumer group
+- Lag-based auto-scaler
+- Metrics logging and benchmark plots
 
----
+## Setup (native, no Docker)
 
-### 🔹 Python
-Python is used for:
-- Rapid development
-- Easy simulation of real-time events
-- Strong ecosystem for data engineering tasks
+Prerequisites: WSL2 + Ubuntu, Java 17, Python 3.
 
----
+    # 1. Kafka (KRaft) — first-time storage format
+    cd ~/kafka
+    export KAFKA_HEAP_OPTS="-Xmx512m -Xms512m"
+    KAFKA_CLUSTER_ID="$(bin/kafka-storage.sh random-uuid)"
+    bin/kafka-storage.sh format --standalone -t "$KAFKA_CLUSTER_ID" -c config/server.properties
 
-### 🔹 Docker
-Docker is used to:
-- Run Kafka and Zookeeper easily
-- Ensure **consistent environment setup**
-- Avoid manual installation issues
+    # 2. Start the broker (leave running)
+    bin/kafka-server-start.sh config/server.properties
 
----
+    # 3. Create the topic (new terminal)
+    bin/kafka-topics.sh --create --topic booking-events \
+      --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092
 
-## 📂 Project Structure
-realtime-event-system/
-│
-├── producer/ # Generates booking events
-├── consumer/ # Processes events
-├── scaler/ # Auto-scaling logic (upcoming)
-├── utils/ # Config and logging utilities
-├── config/ # System settings
-├── logs/ # Logs
-├── docker-compose.yml
+    # 4. Python env + run
+    cd ~/realtime-event-processing-system
+    python3 -m venv venv && source venv/bin/activate
+    pip install kafka-python-ng psutil pandas matplotlib
+    python consumer/consumer.py     # terminal A
+    python producer/data_generator.py   # terminal B
 
+## Future scope
 
----
-
-## 🔄 How It Works (Current Flow)
-
-1. Producer generates booking events (search, booking, payment, etc.)
-2. Events are sent to Kafka topic (`booking-events`)
-3. Kafka stores and streams events
-4. Consumer reads events in real time and processes them
-
----
-
-## 🎯 Next Steps
-
-- Implement multiple consumers (workers)
-- Build auto-scaling module
-- Simulate load increase (10x–100x)
-- Measure latency and throughput
-- Add monitoring (optional)
-
----
-
-## 🔥 Key Learning Outcomes
-
-- Real-time data streaming concepts
-- Kafka-based event-driven architecture
-- System design for scalability
-- Distributed system fundamentals
-
----
-
-## 📌 Note
-
-This project is part of my **M.Tech Major Project** and is being developed incrementally, starting with a working streaming pipeline and progressing towards a fully scalable system.
-
-## 🚧 Development Branch Active
-This branch is used for implementing upcoming
-
-## 📋 Development Checklist
-
-### 🔹 Phase 1: Setup & Initial Pipeline
-- [x] Project structure created
-- [x] Kafka & Zookeeper setup using Docker
-- [x] Kafka topic created (`booking-events`)
-- [x] Producer implemented (event generator)
-- [x] Consumer implemented (event processing)
-- [x] Basic real-time streaming verified
-
----
-
-### 🔹 Phase 2: Multi-Consumer System
-- [ ] Implement multiple consumers (workers)
-- [ ] Add worker identification and logging
-- [ ] Validate parallel processing
-
----
-
-### 🔹 Phase 3: Auto-Scaling Module
-- [ ] Design auto-scaling strategy
-- [ ] Implement scaling controller
-- [ ] Dynamically spawn/terminate consumers
-- [ ] Define scaling thresholds
-
----
-
-### 🔹 Phase 4: Load Simulation
-- [ ] Simulate high traffic (10x–100x)
-- [ ] Measure throughput and latency
-- [ ] Stress test system
-
----
-
-### 🔹 Phase 5: Monitoring & Optimization
-- [ ] Add logging system
-- [ ] Integrate monitoring tools (optional)
-- [ ] Optimize performance
-
----
-
-### 🔹 Phase 6: Deployment & Finalization
-- [ ] Prepare final architecture diagram
-- [ ] Clean code and documentation
-- [ ] Final testing and validation
+- Containerize and deploy on AWS / GCP (this is where Docker/Kubernetes fit)
+- Predictive (ML-based) auto-scaling instead of reactive thresholds
+- Multi-tenant event categories and queues
