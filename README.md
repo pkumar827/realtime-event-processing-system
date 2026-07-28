@@ -119,3 +119,23 @@ Prerequisites: WSL2 + Ubuntu, Java 17, Python 3.
 - Containerize and deploy on AWS / GCP (this is where Docker/Kubernetes fit)
 - Predictive (ML-based) auto-scaling instead of reactive thresholds
 - Multi-tenant event categories and queues
+
+
+## Measured throughput ceiling
+
+Early load tests showed the producer cannot actually reach the 2000 msg/s
+target on this machine. During a curve run, target rate climbed toward ~2000/s
+but the achieved rate flattened at roughly 1100-1300 msg/s — the i3-8130U's
+single-threaded limit for building and serializing JSON events one process at a
+time. Nothing failed; the producer just couldn't send faster.
+
+So I set the defaults to what the rig actually sustains: baseline 40 msg/s,
+peak 1000 msg/s (a 25x surge). Target and achieved rates now track closely,
+which gives clean benchmark curves instead of a clipped, flat peak.
+
+This is why the "10x-100x spike" is framed as a simulated multiplier rather than
+literal throughput. The system demonstrates scaling *behaviour* at rates this
+hardware can push (~25x), and the report discusses extrapolation to higher
+multiples. Reporting measured numbers rather than an unreachable target is the
+honest way to present it, and the design (partitioning, consumer groups,
+lag-based scaling) is what actually scales on bigger hardware.
