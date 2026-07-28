@@ -16,7 +16,7 @@ TOPIC_NAME = "booking-events"
 # and logged; on a low-spec machine the actual peak may be lower, which is fine
 # because the benchmark reports measured numbers, not the target.
 BASE_RATE = 40          # msg/sec, quiet period
-PEAK_RATE = 1000        # msg/sec, surge peak (~40x baseline)
+PEAK_RATE = 500        # msg/sec, surge peak (~40x baseline)
 
 # Step profile (mode=steps): predictable stages for a live demo.
 # Each stage is (duration_seconds, rate). The scaler should visibly react
@@ -41,3 +41,12 @@ SESSION_POOL_TARGET = 100
 
 # --- Internal ---
 TICK_SECONDS = 0.1      # rate is recomputed and applied every 100 ms
+
+# --- Worker (consumer) settings ---
+# Consumer group: all workers share this group so Kafka load-balances the
+# topic's partitions across them. Partition count (3) is the worker ceiling.
+CONSUMER_GROUP = "booking-workers"
+
+# Simulated processing work per event, in milliseconds. This sets one worker's
+# capacity: WORK_MS=5 -> ~200 events/sec. Tuning lever for the scaling demo.
+WORK_MS = 5

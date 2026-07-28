@@ -123,19 +123,26 @@ Prerequisites: WSL2 + Ubuntu, Java 17, Python 3.
 
 ## Measured throughput ceiling
 
-Early load tests showed the producer cannot actually reach the 2000 msg/s
-target on this machine. During a curve run, target rate climbed toward ~2000/s
-but the achieved rate flattened at roughly 1100-1300 msg/s — the i3-8130U's
-single-threaded limit for building and serializing JSON events one process at a
-time. Nothing failed; the producer just couldn't send faster.
+## Load levels and the two ceilings
 
-So I set the defaults to what the rig actually sustains: baseline 40 msg/s,
-peak 1000 msg/s (a 25x surge). Target and achieved rates now track closely,
-which gives clean benchmark curves instead of a clipped, flat peak.
+Two separate limits shape the load numbers, and the lower one wins.
 
-This is why the "10x-100x spike" is framed as a simulated multiplier rather than
-literal throughput. The system demonstrates scaling *behaviour* at rates this
-hardware can push (~25x), and the report discusses extrapolation to higher
-multiples. Reporting measured numbers rather than an unreachable target is the
-honest way to present it, and the design (partitioning, consumer groups,
-lag-based scaling) is what actually scales on bigger hardware.
+Producer ceiling: early tests showed the producer tops out around 1100-1300
+msg/s on this machine — the i3-8130U's single-threaded limit for building and
+serializing JSON events. Nothing fails; it just can't send faster.
+
+Processing ceiling: each worker simulates ~5 ms of work per event, so one worker
+handles ~200 events/sec. With a 3-partition topic, at most 3 workers run in
+parallel — a ceiling of ~600 events/sec.
+
+The processing ceiling (600) is the lower of the two, so it governs. I set the
+surge peak to 500 msg/s over a 40 msg/s baseline (a 12.5x spike) — high enough
+to bury a single worker, low enough that 3 workers fully absorb it. The demo
+then resolves cleanly: at peak one worker is overwhelmed and latency climbs, the
+scaler adds workers, and with 3 workers the backlog drains and latency returns
+to normal.
+
+Every limit here is a config value — peak rate, work-per-event, and
+partition/worker count. Handling more load is a config change, not a redesign,
+up to this hardware's limit; beyond that the same design scales horizontally by
+adding partitions and machines, which is exactly how Kafka scales in production.
