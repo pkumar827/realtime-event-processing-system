@@ -20,6 +20,7 @@ Examples:
     python producer/data_generator.py --mode steps
     python producer/data_generator.py --mode curve --duration 120
     python producer/data_generator.py --mode cycles
+    python producer/data_generator.py --mode cycles --cycle-peak 60 --cycle-cool 20 --cycle-count 2
 """
 
 import argparse
@@ -324,6 +325,12 @@ def parse_args():
                    help="run length in seconds (curve mode)")
     p.add_argument("--base-rate", type=int, default=settings.BASE_RATE)
     p.add_argument("--peak-rate", type=int, default=settings.PEAK_RATE)
+    p.add_argument("--cycle-peak", type=int, default=settings.CYCLE_PEAK_SEC,
+                   help="seconds at peak per cycle (cycles mode)")
+    p.add_argument("--cycle-cool", type=int, default=settings.CYCLE_COOL_SEC,
+                   help="seconds at baseline per cycle (cycles mode)")
+    p.add_argument("--cycle-count", type=int, default=settings.CYCLE_COUNT,
+                   help="number of cycles (cycles mode)")
     p.add_argument("--bootstrap", default=settings.KAFKA_BOOTSTRAP_SERVERS)
     p.add_argument("--topic", default=settings.TOPIC_NAME)
     return p.parse_args()
@@ -339,8 +346,8 @@ def main():
         profile = StepProfile(stages)
     elif args.mode == "cycles":
         profile = CyclesProfile(args.base_rate, args.peak_rate,
-                                settings.CYCLE_PEAK_SEC, settings.CYCLE_COOL_SEC,
-                                settings.CYCLE_COUNT)
+                                args.cycle_peak, args.cycle_cool,
+                                args.cycle_count)
     else:
         profile = CurveProfile(args.base_rate, args.peak_rate, args.duration,
                                settings.CURVE_PEAK_CENTER, settings.CURVE_WIDTH)

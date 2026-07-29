@@ -18,8 +18,13 @@ Decision rules (all configurable in config/settings.py):
     lag < SCALE_DOWN_LAG  and workers > MIN_WORKERS  -> remove a worker
     a cooldown after every action prevents rapid flapping.
 
+The scaler also logs metrics (lag, workers, throughput) to a CSV each poll,
+for later plotting. Use --no-scale for a fixed-1-worker baseline run.
+
 Run:
-    python scaler/auto_scaler.py
+    python scaler/auto_scaler.py                          # auto-scaling
+    python scaler/auto_scaler.py --no-scale               # baseline (no scaling)
+    python scaler/auto_scaler.py --metrics-file out.csv   # choose CSV path
 """
 
 import os
@@ -75,35 +80,42 @@ class LagReader:
         parts = self.reader.partitions_for_topic(topic) or set()
         self.partitions = [TopicPartition(topic, p) for p in parts]
 
-    def total_lag(self):
-        """Return total group lag, or None if it can't be determined yet."""
+    def snapshot(self):
+        """
+        Return (total_lag, committed_total) or (None, None) if not determinable.
+        committed_total = total events processed by the group so far (sum of
+        committed offsets) -- used to derive throughput between polls.
+        """
         if not self.partitions:
-            # Topic metadata may not have been available at init; retry once.
             parts = self.reader.partitions_for_topic(self.topic) or set()
             self.partitions = [TopicPartition(self.topic, p) for p in parts]
             if not self.partitions:
-                return None
+                return None, None
 
-        # Committed offsets for the group (where consumers have processed to).
         try:
             committed = self.admin.list_consumer_group_offsets(self.group)
         except Exception:
-            return None
+            return None, None
 
-        # If the group has never committed (no workers yet), lag is undefined.
         if not committed:
-            return None
+            return None, None
 
-        # Log-end offsets (the newest offset in each partition).
         end_offsets = self.reader.end_offsets(self.partitions)
 
-        total = 0
+        total_lag = 0
+        committed_total = 0
         for tp in self.partitions:
             end = end_offsets.get(tp, 0)
             meta = committed.get(tp)
             current = meta.offset if meta is not None else 0
-            total += max(end - current, 0)
-        return total
+            total_lag += max(end - current, 0)
+            committed_total += current
+        return total_lag, committed_total
+
+    def total_lag(self):
+        """Backwards-compatible: return just the lag."""
+        lag, _ = self.snapshot()
+        return lag
 
     def close(self):
         try:
@@ -189,6 +201,24 @@ def decide(lag, worker_count):
 def main():
     signal.signal(signal.SIGINT, _handle_sigint)
 
+    import argparse
+    p = argparse.ArgumentParser(description="Lag-based auto-scaler")
+    p.add_argument("--no-scale", action="store_true",
+                   help="hold at MIN_WORKERS and never scale (baseline run)")
+    p.add_argument("--metrics-file", default=None,
+                   help="path to write a metrics CSV (default: metrics/run_<ts>.csv)")
+    args = p.parse_args()
+
+    # Decide where to log metrics.
+    metrics_dir = os.path.join(REPO_ROOT, "metrics")
+    os.makedirs(metrics_dir, exist_ok=True)
+    if args.metrics_file:
+        metrics_path = args.metrics_file
+    else:
+        tag = "baseline" if args.no_scale else "scaler"
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        metrics_path = os.path.join(metrics_dir, f"run_{ts}_{tag}.csv")
+
     lag_reader = LagReader(
         settings.KAFKA_BOOTSTRAP_SERVERS,
         settings.CONSUMER_GROUP,
@@ -196,25 +226,47 @@ def main():
     )
     workers = WorkerManager()
 
-    print("Auto-scaler started.")
+    mode_label = "BASELINE (no scaling)" if args.no_scale else "AUTO-SCALING"
+    print(f"Auto-scaler started -- mode: {mode_label}")
     print(f"  up>{settings.SCALE_UP_LAG}  down<{settings.SCALE_DOWN_LAG}  "
           f"cooldown={settings.SCALE_COOLDOWN_SEC}s  "
           f"min={settings.MIN_WORKERS} max={settings.MAX_WORKERS}")
+    print(f"  logging metrics to: {metrics_path}")
 
     # Start at the minimum worker count.
     for _ in range(settings.MIN_WORKERS):
         wid = workers.add()
         print(f"  start -> {wid} (workers={workers.count()})")
 
+    # Open the metrics CSV and write the header.
+    metrics_file = open(metrics_path, "w", buffering=1)  # line-buffered
+    metrics_file.write("elapsed_sec,lag,workers,throughput\n")
+
     last_action = 0.0
-    print("\n  time     lag  workers  action")
+    loop_start = time.time()
+    prev_committed = None
+    prev_time = None
+
+    print("\n  time     lag  workers  thrpt  action")
 
     while running:
-        lag = lag_reader.total_lag()
+        lag, committed_total = lag_reader.snapshot()
         now = time.time()
+
+        # Throughput = events processed since last poll / elapsed.
+        throughput = 0.0
+        if committed_total is not None and prev_committed is not None and prev_time:
+            dt = now - prev_time
+            if dt > 0:
+                throughput = max(committed_total - prev_committed, 0) / dt
+        if committed_total is not None:
+            prev_committed = committed_total
+            prev_time = now
+
         in_cooldown = (now - last_action) < settings.SCALE_COOLDOWN_SEC
 
-        action = decide(lag, workers.count())
+        # In baseline mode, never scale; otherwise use the decision rule.
+        action = "hold" if args.no_scale else decide(lag, workers.count())
         applied = "hold"
 
         if action != "hold" and not in_cooldown:
@@ -228,8 +280,14 @@ def main():
         elif action != "hold" and in_cooldown:
             applied = f"{action} (cooldown)"
 
+        elapsed = now - loop_start
+        # Write a metrics row (skip rows where lag is unknown).
+        if lag is not None:
+            metrics_file.write(f"{elapsed:.1f},{lag},{workers.count()},{throughput:.1f}\n")
+
         lag_str = "  -  " if lag is None else f"{lag:5d}"
-        print(f"  {time.strftime('%H:%M:%S')}  {lag_str}  {workers.count():^7}  {applied}")
+        print(f"  {time.strftime('%H:%M:%S')}  {lag_str}  {workers.count():^7}  "
+              f"{throughput:5.0f}  {applied}")
 
         # Sleep in short slices so Ctrl+C is responsive.
         slept = 0.0
@@ -240,7 +298,8 @@ def main():
     print("\nShutting down scaler -> stopping all workers...")
     workers.stop_all()
     lag_reader.close()
-    print("Scaler stopped. All workers terminated.")
+    metrics_file.close()
+    print(f"Scaler stopped. Metrics saved to {metrics_path}")
 
 
 if __name__ == "__main__":

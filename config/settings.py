@@ -16,7 +16,7 @@ TOPIC_NAME = "booking-events"
 # and logged; on a low-spec machine the actual peak may be lower, which is fine
 # because the benchmark reports measured numbers, not the target.
 BASE_RATE = 40          # msg/sec, quiet period
-PEAK_RATE = 500        # msg/sec, surge peak (~40x baseline)
+PEAK_RATE = 500         # msg/sec, surge peak (12.5x baseline, clean recovery with 3 workers)
 
 # Step profile (mode=steps): predictable stages for a live demo.
 # Each stage is (duration_seconds, rate). The scaler should visibly react
@@ -68,4 +68,3 @@ MAX_WORKERS = 3          # ceiling = partition count (extra workers would idle)
 CYCLE_PEAK_SEC = 120     # seconds at peak load per cycle (your "2 min")
 CYCLE_COOL_SEC = 30      # seconds at baseline between surges
 CYCLE_COUNT = 3          # how many surge cycles to run
-

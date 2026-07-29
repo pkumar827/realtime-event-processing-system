@@ -1,148 +1,153 @@
 # Real-Time Scalable Event Processing System with Auto-Scaling Simulation
 
 M.Tech Major Project — Piyush Kumar (M25DE1046)
+Supervisor: Shubhash Bhagat
 School of Artificial Intelligence & Data Science, IIT Jodhpur
 
-## What this project does
+## Overview
 
-Ticket-booking platforms (BookMyShow and similar) get hit with sudden traffic
-spikes when a popular event opens — the load can jump 10x–100x within seconds.
-This project simulates that burst of booking events, streams them through Kafka,
-processes them with a pool of consumer workers, and runs an auto-scaler that adds
-or removes workers based on how far the consumers are falling behind. The goal is
-to show the system keeping latency under control as load rises, with measured
-numbers to back it up.
+Ticket-booking platforms (BookMyShow and similar) face sudden 10x–100x traffic
+spikes when a popular event opens. This project simulates that surge, streams
+booking events through Apache Kafka, processes them with a pool of consumer
+workers, and runs a lag-based auto-scaler that adds or removes workers as the
+backlog grows and shrinks — keeping latency under control automatically.
 
-Pipeline:
+    Producer  ->  Kafka (booking-events, 3 partitions)  ->  Consumer group  ->  Auto-scaler
+    (surge        (KRaft mode, no Zookeeper)                (worker pool)        (resizes the
+     simulator)                                                                   pool by lag)
 
-    Event Generator  →  Kafka (booking-events topic)  →  Consumer workers  →  Auto-Scaler
-       (producer)         3 partitions                    (consumer group)     (scales workers)
+The auto-scaler is the core contribution: it reads consumer-group lag directly
+from Kafka and spawns/kills workers on threshold crossings, with a cooldown to
+prevent flapping and a worker ceiling tied to partition count.
+
+## Results
+
+Two passes against the same load (see run_demo.sh), reset to zero lag between
+passes for a fair comparison:
+
+- Without auto-scaling (1 fixed worker): the backlog grows unbounded, reaching
+  ~87,000 events of consumer lag and never recovering.
+- With auto-scaling: lag stays near zero, and throughput sustains ~800-1000
+  events/sec during surges — roughly 3x the single-worker ceiling of ~330
+  events/sec.
+
+Under repeating surges, workers scale 1 -> 2 -> 3 as lag rises and back to 1 as
+it clears, entirely automatically.
+
+Result graphs are in docs/results/:
+
+![scaling behaviour](docs/results/scaling.png)
+![lag: with vs without](docs/results/lag_compare.png)
+![throughput: with vs without](docs/results/thrpt_compare.png)
+
+## Components
+
+- producer/data_generator.py — booking-event simulator. Emits a realistic
+  session funnel (search -> view -> select_seat -> ... -> booking) with
+  per-session context, keyed by session_id (the Kafka partition key). Three
+  load profiles: steps, curve (Gaussian surge), and cycles (repeating surges).
+- consumer/consumer.py — a worker. Joins the booking-workers consumer group,
+  simulates ~5 ms of work per event, and reports throughput and per-interval
+  latency. The unit the scaler starts and stops.
+- scaler/auto_scaler.py — the auto-scaler. Reads lag via one persistent Kafka
+  connection (no per-poll JVM overhead), decides using configurable
+  thresholds, launches/stops workers as subprocesses, and logs metrics to CSV.
+  --no-scale gives a fixed-1-worker baseline.
+- plot_metrics.py — turns metrics CSVs into the comparison graphs.
+- run_demo.sh — runs a baseline pass and an auto-scaling pass against the same
+  load, generates graphs, and keeps the last 3 runs.
+- config/settings.py — every tunable in one place.
+- docs/ — the project presentation and result graphs.
+
+## How the auto-scaler works
+
+A control loop every 3 seconds: measure -> decide -> act -> cool down.
+
+    lag = sum ( log_end_offset - committed_offset )    # over all partitions
+                                                       # = events produced but not yet processed
+
+    every 3s:
+        lag = read_lag()
+        if lag > 300 and workers < 3:   spawn_worker()
+        elif lag < 50 and workers > 1:  kill_worker()
+        sleep(10s)                                     # cooldown, prevents flapping
+
+Lag is read in-process through a single persistent connection, so there is no
+JVM launched per poll. The scaling signal (consumer-group lag) and the min/max
+bounds (tied to partition count) mirror how production systems such as KEDA
+scale Kafka consumers.
 
 ## Environment and hardware constraints (changes from the proposal)
 
-The original proposal specified Docker (Confluent Kafka + Zookeeper images),
-plus Prometheus and Grafana for monitoring. When I set the project up on my
-actual development machine, that stack was not workable, so I made some
-deliberate changes. Documenting them here because they are engineering
-decisions, not shortcuts — the system design and deliverables are unchanged.
+The proposal specified Docker (Confluent Kafka + Zookeeper) plus Prometheus and
+Grafana. On the actual development machine — a Lenovo IdeaPad 330, Intel Core
+i3-8130U (2 cores / 4 threads), 4 GB RAM, no GPU, Windows 11 — that stack was
+not workable: two JVMs plus Docker's WSL2 VM demand ~6 GB on a 4 GB machine, so
+it swapped constantly and locked up under load. The changes made, all
+documented as engineering decisions rather than shortcuts:
 
-**The machine:** Lenovo IdeaPad 330, Intel Core i3-8130U (2 cores / 4 threads),
-4 GB RAM, no dedicated GPU, Windows 11. In practice Windows alone uses around
-2.5 GB, so free memory sat at a few hundred MB before I started anything.
+- Dropped Docker; installed natively inside WSL2. Removes the Docker VM
+  overhead. Containerization is kept as the documented cloud-deployment path.
+- Dropped Zookeeper; Kafka runs in KRaft mode. One fewer JVM; still Apache
+  Kafka, same client API.
+- Capped the broker heap at 512 MB so it coexists with the Python processes.
+- Replaced Prometheus + Grafana with CSV logging + matplotlib. Same graphs, a
+  fraction of the memory.
+- Kept Apache Kafka — the core streaming technology, unchanged.
 
-**The problem:** The Confluent Docker stack runs two JVMs (Kafka and Zookeeper),
-which together want roughly 1.5 GB, and Docker Desktop's WSL2 VM adds another
-1.5–2 GB on top. That is 5–6 GB of demand on a 4 GB machine. It swapped
-constantly and locked up — and the one thing this project is built to do is
-generate high load, which is exactly what pushed it over the edge.
+## Load levels and the two ceilings
 
-What I changed, and why:
-
-- **Dropped Docker, installed everything natively inside WSL2 (Ubuntu).**
-  Removed the Docker Desktop VM overhead entirely. Docker was only ever a
-  convenience for starting the broker; it is not part of the system's logic.
-  Containerization is kept as the documented cloud-deployment path (see Future
-  Scope), which is where it actually earns its keep.
-
-- **Dropped Zookeeper — running Kafka in KRaft mode.** Kafka 4.x manages its own
-  metadata quorum and no longer needs Zookeeper, so a single node acts as both
-  broker and controller. That deletes an entire JVM from the memory budget.
-
-- **Capped the Kafka broker heap at 512 MB** (`-Xmx512m -Xms512m`). Default is
-  1 GB; the broker runs comfortably at 512 MB for this workload and leaves room
-  for the Python processes.
-
-- **Replaced Prometheus + Grafana with CSV logging + pandas/matplotlib.** A full
-  monitoring stack cannot coexist with the broker on 4 GB. Instead the workers
-  and scaler log metrics (latency, throughput, consumer lag, worker count) to CSV,
-  and I generate the graphs from that with matplotlib. Same evidence, a fraction
-  of the memory, and the plots go straight into the report.
-
-- **Kept Apache Kafka.** Kafka is the core streaming technology in the proposal
-  and stays exactly that. KRaft is still Apache Kafka — same broker, same client
-  API, just without the separate Zookeeper process.
-
-Net effect: the WSL2 memory cap is set to 2 GB, Kafka lives in 512 MB of that,
-and Windows keeps the rest. The system runs, and the load simulation runs, on a
-4 GB laptop.
-
-## Tech stack
-
-- Python 3
-- Apache Kafka 4.3.1 (KRaft mode, no Zookeeper)
-- kafka-python-ng (Kafka client)
-- psutil (resource monitoring for the scaler)
-- pandas + matplotlib (metrics and plots)
-- Java 17 (runtime for Kafka)
-- WSL2 / Ubuntu (runtime environment)
-
-## Current status
-
-Working:
-- Native Kafka (KRaft) running under WSL2
-- `booking-events` topic with 3 partitions
-- Producer generating booking events
-- Consumer reading events end-to-end
-
-In progress:
-- Rate-controlled load generation (ramp up to simulate spikes)
-- Multi-worker consumer group
-- Lag-based auto-scaler
-- Metrics logging and benchmark plots
+Two limits shape the numbers; the lower one governs. The producer tops out
+around 1100-1300 msg/s on this machine (single-threaded JSON serialization).
+Each worker does ~200 events/s (5 ms/event), and with 3 partitions at most 3
+workers run in parallel — a ceiling of ~600 events/s. That processing ceiling
+is lower, so the surge peak is set to 500 msg/s over a 40 msg/s baseline (a
+12.5x spike): high enough to bury one worker, low enough that three fully
+absorb it, so the demo resolves cleanly. Every limit here is a config value —
+handling more load is a config change, not a redesign, up to the hardware
+limit; beyond that the design scales horizontally, as Kafka does in
+production.
 
 ## Setup (native, no Docker)
 
 Prerequisites: WSL2 + Ubuntu, Java 17, Python 3.
 
-    # 1. Kafka (KRaft) — first-time storage format
+    # Kafka (KRaft) - first-time storage format
     cd ~/kafka
     export KAFKA_HEAP_OPTS="-Xmx512m -Xms512m"
     KAFKA_CLUSTER_ID="$(bin/kafka-storage.sh random-uuid)"
     bin/kafka-storage.sh format --standalone -t "$KAFKA_CLUSTER_ID" -c config/server.properties
+    bin/kafka-server-start.sh config/server.properties          # leave running
 
-    # 2. Start the broker (leave running)
-    bin/kafka-server-start.sh config/server.properties
-
-    # 3. Create the topic (new terminal)
+    # Topic (new terminal)
     bin/kafka-topics.sh --create --topic booking-events \
       --partitions 3 --replication-factor 1 --bootstrap-server localhost:9092
 
-    # 4. Python env + run
+    # Python env
     cd ~/realtime-event-processing-system
     python3 -m venv venv && source venv/bin/activate
     pip install kafka-python-ng psutil pandas matplotlib
-    python consumer/consumer.py     # terminal A
-    python producer/data_generator.py   # terminal B
+
+## Running
+
+    # Full automated demo: baseline + auto-scaling + graphs (keeps last 3 runs)
+    ./run_demo.sh              # short cycles (~5-6 min)
+    ./run_demo.sh --full       # full-length cycles (~15 min)
+
+    # Or run pieces manually:
+    python scaler/auto_scaler.py                    # auto-scaling (starts 1 worker, scales as needed)
+    python scaler/auto_scaler.py --no-scale         # baseline (1 fixed worker)
+    python producer/data_generator.py --mode cycles # repeating surges
+
+Metrics land in metrics/runs/run_<timestamp>/ as CSVs and graphs.
+
+## Tech stack
+
+Apache Kafka 4.3.1 (KRaft) · Java 17 · Python 3 · kafka-python-ng · psutil ·
+pandas · matplotlib · WSL2 / Ubuntu
 
 ## Future scope
 
-- Containerize and deploy on AWS / GCP (this is where Docker/Kubernetes fit)
-- Predictive (ML-based) auto-scaling instead of reactive thresholds
+- Containerize and deploy on AWS / GCP (Docker/Kubernetes belong here)
+- Predictive (ML-based) scaling that reacts ahead of surges
 - Multi-tenant event categories and queues
-
-
-## Measured throughput ceiling
-
-## Load levels and the two ceilings
-
-Two separate limits shape the load numbers, and the lower one wins.
-
-Producer ceiling: early tests showed the producer tops out around 1100-1300
-msg/s on this machine — the i3-8130U's single-threaded limit for building and
-serializing JSON events. Nothing fails; it just can't send faster.
-
-Processing ceiling: each worker simulates ~5 ms of work per event, so one worker
-handles ~200 events/sec. With a 3-partition topic, at most 3 workers run in
-parallel — a ceiling of ~600 events/sec.
-
-The processing ceiling (600) is the lower of the two, so it governs. I set the
-surge peak to 500 msg/s over a 40 msg/s baseline (a 12.5x spike) — high enough
-to bury a single worker, low enough that 3 workers fully absorb it. The demo
-then resolves cleanly: at peak one worker is overwhelmed and latency climbs, the
-scaler adds workers, and with 3 workers the backlog drains and latency returns
-to normal.
-
-Every limit here is a config value — peak rate, work-per-event, and
-partition/worker count. Handling more load is a config change, not a redesign,
-up to this hardware's limit; beyond that the same design scales horizontally by
-adding partitions and machines, which is exactly how Kafka scales in production.
